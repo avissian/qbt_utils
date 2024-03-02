@@ -1,0 +1,45 @@
+on:
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  releases-matrix:
+    name: Release Go Binary
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # build and publish in parallel:
+        goos: [linux, darwin, windows]
+        goarch: [ amd64, arm64, arm ]
+        exclude:
+          - goarch: arm64
+            goos: windows
+          - goarch: arm
+            goos: windows
+          - goarch: arm
+            goos: darwin
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set APP_VERSION env
+        run: echo APP_VERSION=$(basename ${GITHUB_REF}) >> ${GITHUB_ENV}
+      - name: Set BUILD_TIME env
+        run: echo BUILD_TIME=$(date --iso-8601=seconds) >> ${GITHUB_ENV}
+      - name: Environment Printer
+        uses: managedkaos/print-env@v1.0
+
+      - uses: wangyoucao577/go-release-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          goos: ${{ matrix.goos }}
+          goarch: ${{ matrix.goarch }}
+          md5sum: FALSE
+          ldflags: |
+            -s -w 
+            -X "main.appVersion=${{ env.APP_VERSION }}" 
+            -X "main.buildTime=${{ env.BUILD_TIME }}"
+            -X "main.gitCommit=${{ github.sha }}"
