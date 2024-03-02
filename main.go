@@ -6,6 +6,7 @@ import (
 	"github.com/alecthomas/kingpin/v2"
 	"github.com/avissian/banner/tlo_config"
 	"github.com/avissian/go-qbittorrent/qbt"
+	"github.com/davecgh/go-spew/spew"
 	"github.com/pterm/pterm"
 	"github.com/ungerik/go-dry"
 	"golang.org/x/exp/maps"
@@ -60,7 +61,6 @@ func addPath(paths *[]string, path string) {
 }
 
 func catInfo(clients *[]*qbt.Client) {
-
 	type catS struct {
 		Size  float64
 		Count int
@@ -68,17 +68,13 @@ func catInfo(clients *[]*qbt.Client) {
 	}
 
 	cats := make(map[string]catS)
-	stats := make(map[string]int)
 
 	for _, client := range *clients {
 		var hashes []string
-		var all_hashes []string
 		s := "all" //"downloading" //"completed"
 		tl, _ := client.Torrents(qbt.TorrentsOptions{Filter: &s})
 
 		for _, t := range tl {
-			//cats[t.Category] += float64(t.TotalSize) / 1024 / 1024 / 1024
-			stats[t.State] += 1
 			paths := cats[t.Category].Paths
 			addPath(&paths, t.SavePath)
 			cats[t.Category] = catS{cats[t.Category].Size + float64(t.TotalSize)/1024/1024/1024, cats[t.Category].Count + 1, paths}
@@ -88,28 +84,8 @@ func catInfo(clients *[]*qbt.Client) {
 			if t.State == "missingFiles" {
 				log.Printf("missingFiles: %s \"%s\":  %s", client.URL, t.Name, t.SavePath)
 			}
-
-			all_hashes = append(all_hashes, t.Hash)
-
-			//fp[t.SavePath[0:13]] += 1
-
 		}
-
-		//client.Pause(all_hashes)
-		//client.Resume(all_hashes)
 	}
-	///
-	data := pterm.TableData{{"stat", "cnt"}}
-	for _, v := range maps.Keys(stats) {
-		data = append(data, []string{v, strconv.Itoa(stats[v])})
-	}
-	//pterm.DefaultTable.WithHasHeader().WithData(data).Render()
-	///
-	//data = pterm.TableData{{"path[0:13]", "cnt"}}
-	//for _, v := range maps.Keys(fp) {
-	//	data = append(data, []string{v, strconv.Itoa(fp[v])})
-	//}
-	//pterm.DefaultTable.WithHasHeader().WithData(data).Render()
 	///
 	type sortS struct {
 		sort int
@@ -124,17 +100,14 @@ func catInfo(clients *[]*qbt.Client) {
 	}
 	sort.Slice(sortArr, func(i int, j int) bool { return sortArr[i].sort > sortArr[j].sort })
 
-	//log.Printf("%#v", cats)
-	data = pterm.TableData{
+	data := pterm.TableData{
 		{"Cat", "Size, Gb", "Count", "Paths"},
 	}
 	for _, v := range sortArr {
 		sort.Slice(cats[v.name].Paths, func(i, j int) bool { return cats[v.name].Paths[i] < cats[v.name].Paths[j] })
 		data = append(data, []string{v.name, fmt.Sprintf("%.2f", cats[v.name].Size), strconv.Itoa(cats[v.name].Count), strings.Join(cats[v.name].Paths, "|")})
 	}
-
 	_ = pterm.DefaultTable.WithHasHeader().WithData(data).Render()
-
 }
 
 func findDoubles(clients *[]*qbt.Client, delete bool) {
@@ -205,7 +178,9 @@ func findByForumID(clients *[]*qbt.Client, themeForSearch string) {
 				theme = matches[0][1]
 			}
 			if theme == themeForSearch {
-				log.Printf("%#v\n", t)
+				log.Printf("%s\n", client.URL)
+				spew.Dump(t)
+
 			}
 		}
 	}
@@ -328,12 +303,18 @@ func downloadFile(URL, fileName string) (err error) {
 }
 
 func renewFilters(clients *[]*qbt.Client) {
+	fileList := make(map[string]interface{})
 	for _, client := range *clients {
 		prefs, err := client.Preferences()
-		err = downloadFile("https://bot.keeps.cyou/static/ipfilter.dat", prefs.IpFilterPath)
 		dry.PanicIfErr(err)
-
-		err = client.SetPreferences(map[string]any{"ip_filter_enabled": false})
+		fileList[prefs.IpFilterPath] = 0
+	}
+	for file := range fileList {
+		err := downloadFile("https://bot.keeps.cyou/static/ipfilter.dat", file)
+		dry.PanicIfErr(err)
+	}
+	for _, client := range *clients {
+		err := client.SetPreferences(map[string]any{"ip_filter_enabled": false})
 		dry.PanicIfErr(err)
 		err = client.SetPreferences(map[string]any{"ip_filter_enabled": true})
 		dry.PanicIfErr(err)
@@ -362,15 +343,16 @@ func main() {
 	log.SetOutput(os.Stdout)
 	//
 	configPath := kingpin.Arg("path", "Путь к файлу конфига ТЛО").Required().File()
+	queueF := kingpin.Flag("queue", "Подтюнить очередь на закачку").Short('q').Default("30").Int()
 	pauseF := kingpin.Flag("pause", "Остановить всё").Short('p').Bool()
 	resumeF := kingpin.Flag("resume", "Запустить всё").Short('r').Bool()
 	filtersF := kingpin.Flag("filters", "Обновить IP Filters").Short('f').Bool()
-	queueF := kingpin.Flag("queue", "Очередь на закачку").Short('q').Default("30").Int()
 	infoF := kingpin.Flag("info", "Инфа о статусах").Short('i').Bool()
 	searchF := kingpin.Flag("search", "Поиск по forum_id").Short('s').String()
 	catF := kingpin.Flag("categories", "Подробно по категориям").Short('c').Bool()
 	doublesF := kingpin.Flag("doubles", "Поиск и удаление дублей по forum_id").Short('d').Bool()
 	checkF := kingpin.Flag("check", "Проверка статусов раздач, которые не попадут в отчёты").Bool()
+	colorF := kingpin.Flag("color", "Цвет в выводе").Bool()
 	silentF := kingpin.Flag("silent", "Выводить меньше сообщений").Short('m').Bool()
 	if len(os.Args) < 2 {
 		os.Args = append(os.Args, "--help")
@@ -389,6 +371,9 @@ func main() {
 	clients := make([]*qbt.Client, len(tlo.Clients))
 	for idx, clientCfg := range tlo.Clients {
 		clients[idx] = Connect(clientCfg.Login, clientCfg.Pass, clientCfg.Host, clientCfg.Port, clientCfg.SSL, *silentF)
+	}
+	if !*colorF {
+		pterm.DisableColor()
 	}
 	/**/
 	loadBallance(&clients, *queueF)

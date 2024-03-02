@@ -6,6 +6,7 @@ require (
 	github.com/alecthomas/kingpin/v2 v2.4.0
 	github.com/avissian/banner v0.0.3
 	github.com/avissian/go-qbittorrent v0.0.5
+	github.com/davecgh/go-spew v1.1.1
 	github.com/pterm/pterm v0.12.79
 	github.com/ungerik/go-dry v0.0.0-20231011182423-d9a07fd18c5f
 	golang.org/x/exp v0.0.0-20240222234643-814bf88cf225
