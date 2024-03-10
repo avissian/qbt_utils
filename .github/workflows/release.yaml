@@ -23,7 +23,7 @@ jobs:
           - goarch: arm
             goos: darwin
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set APP_VERSION env
         run: echo APP_VERSION=$(basename ${GITHUB_REF}) >> ${GITHUB_ENV}
@@ -42,4 +42,3 @@ jobs:
             -s -w 
             -X "main.appVersion=${{ env.APP_VERSION }}" 
             -X "main.buildTime=${{ env.BUILD_TIME }}"
-            -X "main.gitCommit=${{ github.sha }}"

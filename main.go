@@ -20,6 +20,12 @@ import (
 	"strings"
 )
 
+const (
+	kB = 1024
+	mB = kB * 1024
+	gB = mB * 1024
+)
+
 func Connect(user string, pass string, server string, port uint32, SSL bool, silent bool) (client *qbt.Client) {
 	scheme := "http"
 	if SSL {
@@ -62,7 +68,7 @@ func addPath(paths *[]string, path string) {
 
 func catInfo(clients *[]*qbt.Client) {
 	type catS struct {
-		Size  float64
+		Size  uint64
 		Count int
 		Paths []string
 	}
@@ -77,7 +83,7 @@ func catInfo(clients *[]*qbt.Client) {
 		for _, t := range tl {
 			paths := cats[t.Category].Paths
 			addPath(&paths, t.SavePath)
-			cats[t.Category] = catS{cats[t.Category].Size + float64(t.TotalSize)/1024/1024/1024, cats[t.Category].Count + 1, paths}
+			cats[t.Category] = catS{cats[t.Category].Size + uint64(t.TotalSize), cats[t.Category].Count + 1, paths}
 			if t.State == "pausedDL" {
 				hashes = append(hashes, t.Hash)
 			}
@@ -88,14 +94,14 @@ func catInfo(clients *[]*qbt.Client) {
 	}
 	///
 	type sortS struct {
-		sort int
+		sort uint64
 		name string
 	}
 	sortArr := make([]sortS, len(cats))
 	idx := 0
 	for key, val := range cats {
 		sortArr[idx].name = key
-		sortArr[idx].sort = int(val.Size * 1024 * 1024 * 1024)
+		sortArr[idx].sort = val.Size
 		idx++
 	}
 	sort.Slice(sortArr, func(i int, j int) bool { return sortArr[i].sort > sortArr[j].sort })
@@ -105,7 +111,12 @@ func catInfo(clients *[]*qbt.Client) {
 	}
 	for _, v := range sortArr {
 		sort.Slice(cats[v.name].Paths, func(i, j int) bool { return cats[v.name].Paths[i] < cats[v.name].Paths[j] })
-		data = append(data, []string{v.name, fmt.Sprintf("%.2f", cats[v.name].Size), strconv.Itoa(cats[v.name].Count), strings.Join(cats[v.name].Paths, "|")})
+		data = append(data, []string{
+			v.name, // Cat
+			fmt.Sprintf("%.2f", float64(cats[v.name].Size)/gB), // Size, Gb
+			strconv.Itoa(cats[v.name].Count),                   // Count
+			strings.Join(cats[v.name].Paths, "|"),              // Paths
+		})
 	}
 	_ = pterm.DefaultTable.WithHasHeader().WithData(data).Render()
 }
@@ -161,30 +172,36 @@ func findDoubles(clients *[]*qbt.Client, delete bool) {
 	}
 }
 
-func findByForumID(clients *[]*qbt.Client, themeForSearch string) {
+func findTorrent(clients *[]*qbt.Client, themeSearch string, hashSearch string) {
 	re := regexp.MustCompile("rutracker.*=([0-9]+)$")
+	hashSearch = strings.ToLower(hashSearch)
 
-	theme := ""
+	forumTheme := ""
 	for _, client := range *clients {
-		tl, err := client.Torrents(qbt.TorrentsOptions{})
+		torrentList, err := client.Torrents(qbt.TorrentsOptions{})
 		if err != nil {
 			continue
 		}
-		for _, t := range tl {
-			ti, _ := client.Torrent(t.Hash)
+		for _, torrent := range torrentList {
+			if themeSearch != "" {
+				torrentInfo, _ := client.Torrent(torrent.Hash)
 
-			if re.MatchString(ti.Comment) {
-				matches := re.FindAllStringSubmatch(ti.Comment, -1)
-				theme = matches[0][1]
+				if re.MatchString(torrentInfo.Comment) {
+					matches := re.FindAllStringSubmatch(torrentInfo.Comment, -1)
+					forumTheme = matches[0][1]
+				}
 			}
-			if theme == themeForSearch {
+			if (themeSearch != "" &&
+				forumTheme == themeSearch) ||
+				(hashSearch != "" &&
+					hashSearch == strings.ToLower(torrent.Hash)) {
 				log.Printf("%s\n", client.URL)
-				spew.Dump(t)
-
+				spew.Config.Indent = "  "
+				spew.Dump(torrent)
+				//return
 			}
 		}
 	}
-
 }
 
 func infoExtended(clients *[]*qbt.Client) {
@@ -218,7 +235,7 @@ func infoExtended(clients *[]*qbt.Client) {
 	for _, v := range sortArr {
 		data = append(data, []string{
 			v,
-			fmt.Sprintf("%.2f", float64(stats[v].TotalSize)/1024/1024/1024),
+			fmt.Sprintf("%.2f", float64(stats[v].TotalSize)/gB),
 			strconv.Itoa(stats[v].Count),
 		},
 		)
@@ -229,9 +246,7 @@ func infoExtended(clients *[]*qbt.Client) {
 func checkStatus(clients *[]*qbt.Client) {
 
 	for _, client := range *clients {
-
 		tl, _ := client.Torrents(qbt.TorrentsOptions{})
-
 		for _, t := range tl {
 			switch t.State {
 			case "error":
@@ -349,6 +364,7 @@ func main() {
 	filtersF := kingpin.Flag("filters", "Обновить IP Filters").Short('f').Bool()
 	infoF := kingpin.Flag("info", "Инфа о статусах").Short('i').Bool()
 	searchF := kingpin.Flag("search", "Поиск по forum_id").Short('s').String()
+	searchByHashF := kingpin.Flag("search-hash", "Поиск по hash раздачи").String()
 	catF := kingpin.Flag("categories", "Подробно по категориям").Short('c').Bool()
 	doublesF := kingpin.Flag("doubles", "Поиск и удаление дублей по forum_id").Short('d').Bool()
 	checkF := kingpin.Flag("check", "Проверка статусов раздач, которые не попадут в отчёты").Bool()
@@ -376,7 +392,9 @@ func main() {
 		pterm.DisableColor()
 	}
 	/**/
-	loadBallance(&clients, *queueF)
+	if *queueF > 0 { // default 30
+		loadBallance(&clients, *queueF)
+	}
 
 	if *filtersF {
 		renewFilters(&clients)
@@ -390,8 +408,8 @@ func main() {
 	if *infoF {
 		infoExtended(&clients)
 	}
-	if *searchF != "" {
-		findByForumID(&clients, *searchF)
+	if *searchF != "" || *searchByHashF != "" {
+		findTorrent(&clients, *searchF, *searchByHashF)
 	}
 	if *pauseF || *resumeF {
 		pauseAll(&clients, *pauseF, *resumeF)
