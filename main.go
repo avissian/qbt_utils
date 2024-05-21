@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -358,7 +359,8 @@ func main() {
 	log.SetOutput(os.Stdout)
 	//
 	configPath := kingpin.Arg("path", "Путь к файлу конфига ТЛО").Required().File()
-	queueF := kingpin.Flag("queue", "Подтюнить очередь на закачку").Short('q').Default("30").Int()
+	queueF := kingpin.Flag("queue", "Подтюнить очередь на закачку").Short('q').Int()
+	loopF := kingpin.Flag("loop", "Зациклить выполнение, раз в 60 секунд").Short('l').Bool()
 	pauseF := kingpin.Flag("pause", "Остановить всё").Short('p').Bool()
 	resumeF := kingpin.Flag("resume", "Запустить всё").Short('r').Bool()
 	filtersF := kingpin.Flag("filters", "Обновить IP Filters").Short('f').Bool()
@@ -392,30 +394,38 @@ func main() {
 		pterm.DisableColor()
 	}
 	/**/
-	if *queueF > 0 { // default 30
-		loadBallance(&clients, *queueF)
-	}
+	for {
+		if *queueF > 0 { // default 0
+			loadBallance(&clients, *queueF)
+		}
 
-	if *filtersF {
-		renewFilters(&clients)
-	}
-	if *catF {
-		catInfo(&clients)
-	}
-	if *doublesF {
-		findDoubles(&clients, true)
-	}
-	if *infoF {
-		infoExtended(&clients)
-	}
-	if *searchF != "" || *searchByHashF != "" {
-		findTorrent(&clients, *searchF, *searchByHashF)
-	}
-	if *pauseF || *resumeF {
-		pauseAll(&clients, *pauseF, *resumeF)
+		if *filtersF {
+			renewFilters(&clients)
+		}
+		if *catF {
+			catInfo(&clients)
+		}
+		if *doublesF {
+			findDoubles(&clients, true)
+		}
+		if *infoF {
+			infoExtended(&clients)
+		}
+		if *searchF != "" || *searchByHashF != "" {
+			findTorrent(&clients, *searchF, *searchByHashF)
+		}
+		if *pauseF || *resumeF {
+			pauseAll(&clients, *pauseF, *resumeF)
+		}
+		if *loopF {
+			time.Sleep(time.Second * 60)
+		} else {
+			break
+		}
 	}
 	// выходит с кодом ошибки, должен быть в конце
 	if *checkF {
 		checkStatus(&clients)
 	}
+
 }

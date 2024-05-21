@@ -1,4 +1,4 @@
-module qbit_utils
+module qbt_utils
 
 go 1.21
 
