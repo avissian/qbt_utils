@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -67,7 +68,8 @@ func addPath(paths *[]string, path string) {
 	*paths = append(*paths, pathTmp)
 }
 
-func catInfo(clients *[]*qbt.Client) {
+func catInfo(clients *[]*qbt.Client, wg *sync.WaitGroup) {
+	defer wg.Done()
 	type catS struct {
 		Size  uint64
 		Count int
@@ -77,7 +79,6 @@ func catInfo(clients *[]*qbt.Client) {
 	cats := make(map[string]catS)
 
 	for _, client := range *clients {
-		var hashes []string
 		s := "all" //"downloading" //"completed"
 		tl, _ := client.Torrents(qbt.TorrentsOptions{Filter: &s})
 
@@ -85,9 +86,6 @@ func catInfo(clients *[]*qbt.Client) {
 			paths := cats[t.Category].Paths
 			addPath(&paths, t.SavePath)
 			cats[t.Category] = catS{cats[t.Category].Size + uint64(t.TotalSize), cats[t.Category].Count + 1, paths}
-			if t.State == "pausedDL" {
-				hashes = append(hashes, t.Hash)
-			}
 			if t.State == "missingFiles" {
 				log.Printf("missingFiles: %s \"%s\":  %s", client.URL, t.Name, t.SavePath)
 			}
@@ -122,7 +120,8 @@ func catInfo(clients *[]*qbt.Client) {
 	_ = pterm.DefaultTable.WithHasHeader().WithData(data).Render()
 }
 
-func findDoubles(clients *[]*qbt.Client, delete bool) {
+func findDoubles(clients *[]*qbt.Client, delete bool, wg *sync.WaitGroup) {
+	defer wg.Done()
 	var hashesForDelete []string
 	re := regexp.MustCompile("rutracker.*=([0-9]+)$")
 	ids := make(map[string][]qbt.TorrentInfo)
@@ -173,39 +172,8 @@ func findDoubles(clients *[]*qbt.Client, delete bool) {
 	}
 }
 
-func findTorrent(clients *[]*qbt.Client, themeSearch string, hashSearch string) {
-	re := regexp.MustCompile("rutracker.*=([0-9]+)$")
-	hashSearch = strings.ToLower(hashSearch)
-
-	forumTheme := ""
-	for _, client := range *clients {
-		torrentList, err := client.Torrents(qbt.TorrentsOptions{})
-		if err != nil {
-			continue
-		}
-		for _, torrent := range torrentList {
-			if themeSearch != "" {
-				torrentInfo, _ := client.Torrent(torrent.Hash)
-
-				if re.MatchString(torrentInfo.Comment) {
-					matches := re.FindAllStringSubmatch(torrentInfo.Comment, -1)
-					forumTheme = matches[0][1]
-				}
-			}
-			if (themeSearch != "" &&
-				forumTheme == themeSearch) ||
-				(hashSearch != "" &&
-					hashSearch == strings.ToLower(torrent.Hash)) {
-				log.Printf("%s\n", client.URL)
-				spew.Config.Indent = "  "
-				spew.Dump(torrent)
-				//return
-			}
-		}
-	}
-}
-
-func infoExtended(clients *[]*qbt.Client) {
+func infoExtended(clients *[]*qbt.Client, wg *sync.WaitGroup) {
+	defer wg.Done()
 	type statS struct {
 		TotalSize int64
 		Count     int
@@ -217,16 +185,30 @@ func infoExtended(clients *[]*qbt.Client) {
 		filter := ""
 		tl, _ := client.Torrents(qbt.TorrentsOptions{Filter: &filter})
 		var hashes []string
+		var hashes2 []string
+		var hashes3 []string
 		for _, t := range tl {
 			hashes = append(hashes, t.Hash)
-			stats[t.State] = statS{
+			forced := ""
+			if t.ForceStart {
+				forced = "+F"
+			}
+			stats[t.State+forced] = statS{
 				stats[t.State].TotalSize + t.TotalSize,
 				stats[t.State].Count + 1,
 			}
 			if t.State == "missingFiles" {
 				log.Printf("missingFiles: %s \"%s\":  %s", client.URL, t.Name, t.SavePath)
 			}
+			if t.State == "checkingDL" {
+				hashes3 = append(hashes3, t.Hash)
+			}
+			if t.ForceStart && strings.HasPrefix(t.State, "forced") {
+				hashes2 = append(hashes2, t.Hash)
+			}
 		}
+		client.SetForceStart(hashes2, false)
+		client.SetForceStart(hashes3, true)
 	}
 	///
 	sortArr := maps.Keys(stats)
@@ -271,7 +253,8 @@ func checkStatus(clients *[]*qbt.Client) {
 	}
 }
 
-func loadBallance(clients *[]*qbt.Client, queueSize int) {
+func loadBallance(clients *[]*qbt.Client, queueSize int, wg *sync.WaitGroup) {
+	wg.Done()
 	for _, client := range *clients {
 		filter := "downloading"
 		tl, err := client.Torrents(qbt.TorrentsOptions{Filter: &filter})
@@ -318,7 +301,8 @@ func downloadFile(URL, fileName string) (err error) {
 	return
 }
 
-func renewFilters(clients *[]*qbt.Client) {
+func renewFilters(clients *[]*qbt.Client, wg *sync.WaitGroup) {
+	defer wg.Done()
 	fileList := make(map[string]interface{})
 	for _, client := range *clients {
 		prefs, err := client.Preferences()
@@ -339,20 +323,58 @@ func renewFilters(clients *[]*qbt.Client) {
 	}
 }
 
-func pauseAll(clients *[]*qbt.Client, pause bool, resume bool) {
+func showErrors(clients *[]*qbt.Client, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	wg2 := sync.WaitGroup{}
 	for _, client := range *clients {
-		var hashes []string
-		tl, _ := client.Torrents(qbt.TorrentsOptions{})
-		for _, torrent := range tl {
-			hashes = append(hashes, torrent.Hash)
-		}
-		if pause {
-			_ = client.Pause(hashes)
-		}
-		if resume {
-			_ = client.Resume(hashes)
-		}
+		wg2.Add(1)
+		go func(client *qbt.Client) {
+			defer wg2.Done()
+
+			tl, _ := client.Torrents(qbt.TorrentsOptions{})
+			for _, t := range tl {
+				switch t.State {
+				case "error":
+					fallthrough
+				case "missingFiles":
+
+					log.Printf("%s\n", client.URL)
+					spew.Config.Indent = "  "
+					spew.Dump(t)
+				}
+			}
+		}(client)
 	}
+	wg2.Wait()
+
+}
+
+func pauseAll(clients *[]*qbt.Client, pause bool, resume bool, wg *sync.WaitGroup) {
+	defer wg.Done()
+	wg2 := sync.WaitGroup{}
+	for _, client := range *clients {
+		wg2.Add(1)
+		go func(client *qbt.Client) {
+			defer wg2.Done()
+			var hashes []string
+			tl, _ := client.Torrents(qbt.TorrentsOptions{})
+			for _, torrent := range tl {
+				hashes = append(hashes, torrent.Hash)
+			}
+			if pause {
+				_ = client.Pause(hashes)
+			}
+			if resume {
+				err := client.Resume(hashes)
+				if err != nil {
+					fmt.Println(err)
+				}
+			}
+			//fmt.Printf("%v %v", pause, hashes)
+		}(client)
+	}
+	wg2.Wait()
 }
 
 func main() {
@@ -370,6 +392,7 @@ func main() {
 	catF := kingpin.Flag("categories", "Подробно по категориям").Short('c').Bool()
 	doublesF := kingpin.Flag("doubles", "Поиск и удаление дублей по forum_id").Short('d').Bool()
 	checkF := kingpin.Flag("check", "Проверка статусов раздач, которые не попадут в отчёты").Bool()
+	errorsF := kingpin.Flag("errors", "Вывод ошибок").Short('e').Bool()
 	colorF := kingpin.Flag("color", "Цвет в выводе").Bool()
 	silentF := kingpin.Flag("silent", "Выводить меньше сообщений").Short('m').Bool()
 	if len(os.Args) < 2 {
@@ -393,33 +416,50 @@ func main() {
 	if !*colorF {
 		pterm.DisableColor()
 	}
+	var wg sync.WaitGroup
 	/**/
 	for {
 		if *queueF > 0 { // default 0
-			loadBallance(&clients, *queueF)
+			wg.Add(1)
+			go loadBallance(&clients, *queueF, &wg)
 		}
 
 		if *filtersF {
-			renewFilters(&clients)
+			wg.Add(1)
+			go renewFilters(&clients, &wg)
 		}
 		if *catF {
-			catInfo(&clients)
+			wg.Add(1)
+			go catInfo(&clients, &wg)
 		}
 		if *doublesF {
-			findDoubles(&clients, true)
+			wg.Add(1)
+			go findDoubles(&clients, true, &wg)
 		}
 		if *infoF {
-			infoExtended(&clients)
+			wg.Add(1)
+			go infoExtended(&clients, &wg)
 		}
 		if *searchF != "" || *searchByHashF != "" {
-			findTorrent(&clients, *searchF, *searchByHashF)
+			wg.Add(1)
+			go findTorrent(&clients, *searchF, *searchByHashF, &wg)
 		}
 		if *pauseF || *resumeF {
-			pauseAll(&clients, *pauseF, *resumeF)
+			wg.Add(1)
+			go pauseAll(&clients, *pauseF, *resumeF, &wg)
 		}
+
+		if *errorsF || *resumeF {
+			wg.Add(1)
+			go showErrors(&clients, &wg)
+		}
+
+		//
 		if *loopF {
 			time.Sleep(time.Second * 60)
+			wg.Wait()
 		} else {
+			wg.Wait()
 			break
 		}
 	}
